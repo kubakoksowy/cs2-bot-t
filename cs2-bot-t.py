@@ -52,4 +52,5 @@ import threading
 threading.Thread(target=start_bot).start()
 
 if __name__ == "__main__":
+    # Flask będzie działać na porcie, który Render przydzieli
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
