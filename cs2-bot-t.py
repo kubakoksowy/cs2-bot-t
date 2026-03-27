@@ -1,56 +1,78 @@
-from flask import Flask, jsonify
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
-import os, json
-from datetime import datetime, timedelta
+import os
+import json
 import pytz
+from datetime import datetime, timedelta
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from flask import Flask, jsonify
 
 TOKEN = os.environ.get("TOKEN")
-TRADES_FILE = "trades.json"
-TB_FILE = "tradebans.json"
-
 app = Flask(__name__)
 
-# ===== Telegram Bot Commands =====
-def log_trade(update: Update, context: CallbackContext):
-    item = " ".join(context.args)
-    trades = json.load(open(TRADES_FILE, "r")) if os.path.exists(TRADES_FILE) else []
-    trades.append({"item": item, "date": datetime.now().strftime("%Y-%m-%d")})
-    json.dump(trades, open(TRADES_FILE, "w"), indent=2)
-    update.message.reply_text(f"✅ Logged: {item}")
+trades_file = "trades.json"
+tradebans_file = "tradebans.json"
 
-def tradeban(update: Update, context: CallbackContext):
-    skin = " ".join(context.args)
+# --- TELEGRAM BOT --- #
+async def log_trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
+    trade = {
+        "item": text,
+        "time": datetime.utcnow().isoformat()
+    }
+    if os.path.exists(trades_file):
+        with open(trades_file, "r") as f:
+            data = json.load(f)
+    else:
+        data = []
+    data.append(trade)
+    with open(trades_file, "w") as f:
+        json.dump(data, f, indent=2)
+    await update.message.reply_text(f"Logged: {text}")
+
+async def tradeban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
+    utc_now = datetime.utcnow()
+    # Tradeban 8 dni → 9:00 PL time
     tz = pytz.timezone("Europe/Warsaw")
-    now = datetime.now(tz)
-    target_date = (now + timedelta(days=8)).replace(hour=9, minute=0)
-    tb = json.load(open(TB_FILE, "r")) if os.path.exists(TB_FILE) else []
-    tb.append({"skin": skin, "notify_at": target_date.strftime("%Y-%m-%d %H:%M"), "chat_id": update.message.chat_id})
-    json.dump(tb, open(TB_FILE, "w"), indent=2)
-    update.message.reply_text(f"⏳ Tradeban set: {target_date.strftime('%Y-%m-%d %H:%M')}")
+    tb_end = (utc_now + timedelta(days=8)).astimezone(tz).replace(hour=9, minute=0, second=0, microsecond=0)
+    tradeban = {"item": text, "tradeban_end": tb_end.isoformat()}
+    if os.path.exists(tradebans_file):
+        with open(tradebans_file, "r") as f:
+            data = json.load(f)
+    else:
+        data = []
+    data.append(tradeban)
+    with open(tradebans_file, "w") as f:
+        json.dump(data, f, indent=2)
+    await update.message.reply_text(f"Tradeban logged: {text}, ends {tb_end}")
 
-# ===== Flask API =====
+# --- Flask API --- #
 @app.route("/trades")
-def trades():
-    trades = json.load(open(TRADES_FILE, "r")) if os.path.exists(TRADES_FILE) else []
-    return jsonify(trades)
+def get_trades():
+    if os.path.exists(trades_file):
+        with open(trades_file, "r") as f:
+            data = json.load(f)
+    else:
+        data = []
+    return jsonify(data)
 
 @app.route("/tradebans")
-def tradebans():
-    tb = json.load(open(TB_FILE, "r")) if os.path.exists(TB_FILE) else []
-    return jsonify(tb)
+def get_tradebans():
+    if os.path.exists(tradebans_file):
+        with open(tradebans_file, "r") as f:
+            data = json.load(f)
+    else:
+        data = []
+    return jsonify(data)
 
-# ===== Start bot in background =====
-def start_bot():
-    updater = Updater(TOKEN)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("log", log_trade))
-    dp.add_handler(CommandHandler("tradeban", tradeban))
-    updater.start_polling()
-
-import threading
-threading.Thread(target=start_bot).start()
-
+# --- RUN --- #
 if __name__ == "__main__":
-    # Flask będzie działać na porcie, który Render przydzieli
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # Uruchom Flask w Render
+    from threading import Thread
+    Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))).start()
+
+    # Uruchom Telegram bota
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+    app_bot.add_handler(CommandHandler("log", log_trade))
+    app_bot.add_handler(CommandHandler("tradeban", tradeban))
+    app_bot.run_polling()
